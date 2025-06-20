@@ -32,7 +32,7 @@ const unsigned long DELIVERY_COOLDOWN = 5000; // Minimum time between deliveries
 
 // PIR Sensitivity Control
 const unsigned long PIR_DEBOUNCE_TIME = 1000;  // 1 second debounce period
-const int PIR_REQUIRED_TRIGGERS = 5;           // Number of consecutive triggers needed
+const int PIR_REQUIRED_TRIGGERS = 3;           // Number of consecutive triggers needed
 const unsigned long PIR_RESET_TIME = 3000;     // Reset trigger count after this time
 
 // Timing Intervals
@@ -260,7 +260,7 @@ void lockMailbox(bool lock) {
 // ============== DISPLAY FUNCTIONS ==============
 void updateDisplay() {
   if(millis() - lastDisplayChange > DISPLAY_INTERVAL) {
-    displayScreen = (displayScreen + 1) % 4;
+    displayScreen = (displayScreen + 1) % 3;
     lastDisplayChange = millis();
   }
   
@@ -327,13 +327,15 @@ void fetchBoxData() {
 }
 
 void parseResponse(String payload) {
-  DynamicJsonDocument doc(256);
+  DynamicJsonDocument doc(768);
   deserializeJson(doc, payload);
   
   boxLocation = doc["location"].as<String>();
   boxStatus = doc["status"].as<String>();
   userName = doc["user"]["name"].as<String>();    
   userPhoneNum = doc["user"]["phone"].as<String>();
+  String lockStatus = doc["lock"].as<String>();
+  digitalWrite(RELAY_PIN, lockStatus == "LOCKED" ? HIGH : LOW);
   
   bool serverOccupied = (boxStatus == "OCCUPIED");
   if(serverOccupied != lastOccupiedState) {

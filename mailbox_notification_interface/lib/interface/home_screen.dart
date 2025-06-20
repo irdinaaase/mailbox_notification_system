@@ -6,6 +6,7 @@ import 'package:mailbox_notification_system/model/log_model.dart';
 import 'package:mailbox_notification_system/interface/profile_screen.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:intl/intl.dart'; 
 import 'package:flutter_animator/flutter_animator.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -24,39 +25,51 @@ class _HomeScreenState extends State<HomeScreen> {
   int selectedTabIndex = 0;
   bool _isSearching = false;
 
+  // Super Mario Color Palette
+static const marioRed = Color(0xFFE4000F);
+static const marioBlue = Color(0xFF049CD8);
+static const marioYellow = Color(0xFFFBD000);
+static const marioGreen = Color(0xFF43B047);
+static const marioWhite = Color(0xFFFFFFFF);
+static const marioBlack = Color(0xFF000000);
+
   @override
   void initState() {
     super.initState();
     _boxesFuture = _fetchBoxes();
   }
 
-  Future<List<Box>> _fetchBoxes() async {
+Future<List<Box>> _fetchBoxes() async {
+  try {
     final response = await http.get(
       Uri.parse('${MyConfig.servername}/flutter_php/get_user_with_boxes.php?user_id=${widget.userdata.userId}'),
-    );
+    ).timeout(const Duration(seconds: 10));  // Add timeout
 
     if (response.statusCode == 200) {
-      final Map<String, dynamic> jsonData = json.decode(response.body);
-      final List<dynamic> boxesList = jsonData['boxes'];
+      final jsonData = json.decode(response.body);
+      final boxesList = jsonData['boxes'] as List;
       
-      // Convert to Box objects
-      List<Box> boxes = boxesList.map((json) => Box.fromJson(json)).toList();
-      
-      // Assign sequential numbers based on the user's boxes
-      for (int i = 0; i < boxes.length; i++) {
-        boxes[i].userBoxNumber = (i + 1).toString();
-      }
-      
-      return boxes;
+      // Use compute() for heavy processing if needed
+      return boxesList.map((json) => Box.fromJson(json)).toList();
     } else {
-      throw Exception('Failed to load boxes');
+      throw Exception('Failed to load boxes: ${response.statusCode}');
     }
+  } catch (e) {
+    throw Exception('Network error: $e');
   }
+}
 
-  Future<List<Log>> _fetchBoxLogs(String boxId) async {
-    final response = await http.get(
-      Uri.parse('${MyConfig.servername}/flutter_php/get_box_logs.php?box_id=$boxId'),
-    );
+  Future<List<Log>> _fetchBoxLogs(String boxId, {DateTime? fromDate, DateTime? toDate}) async {
+    String url = '${MyConfig.servername}/flutter_php/get_box_logs.php?box_id=$boxId';
+    
+    if (fromDate != null) {
+      url += '&from_date=${DateFormat('yyyy-MM-dd').format(fromDate)}';
+    }
+    if (toDate != null) {
+      url += '&to_date=${DateFormat('yyyy-MM-dd').format(toDate)}';
+    }
+
+    final response = await http.get(Uri.parse(url));
 
     if (response.statusCode == 200) {
       final List<dynamic> jsonData = json.decode(response.body);
@@ -66,9 +79,17 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _refreshBoxes() async {
-    setState(() => _boxesFuture = _fetchBoxes());
-  }
+Future<void> _refreshBoxes() async {
+  // Show immediate feedback by clearing old data
+  setState(() {
+    _boxesFuture = Future.value([]); // Clear existing data
+  });
+  
+  // Then load new data
+  setState(() {
+    _boxesFuture = _fetchBoxes();
+  });
+}
 
   // UI Components
   Widget _buildTabButton(String title, int index, IconData icon) {
@@ -302,306 +323,584 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // Dialog methods
-  void _showBoxLogs(Box box) async {
+void _showBoxLogs(Box box) async {
+  DateTime? selectedFromDate;
+  DateTime? selectedToDate = DateTime.now();
+  List<Log> allLogs = [];
+
+  Future<List<Log>> _fetchAndFilterLogs() async {
     try {
       final logs = await _fetchBoxLogs(box.boxId!);
-      showDialog(
-        context: context,
-        builder: (context) => Dialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          insetPadding: const EdgeInsets.all(16),
-          child: Container(
-            padding: const EdgeInsets.all(16),
-            constraints: const BoxConstraints(maxHeight: 500),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'History for Box #${box.boxId}',
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 16),
-                Expanded(
-                  child: logs.isEmpty
-                      ? const Center(child: Text('No history available'))
-                      : ListView.builder(
-                          shrinkWrap: true,
-                          itemCount: logs.length,
-                          itemBuilder: (context, index) {
-                            final log = logs[index];
-                            return Card(
-                              margin: const EdgeInsets.only(bottom: 8),
-                              child: ListTile(
-                                leading: const Icon(Icons.history),
-                                title: Text(log.action),
-                                subtitle: Text(_formatTimestamp(log.timestamp)),
-                                trailing: Text('Log #${log.logId}'),
-                              ),
-                            );
-                          },
-                        ),
-                ),
-                const SizedBox(height: 16),
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('CLOSE'),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
+      allLogs = logs;
+      
+      List<Log> filteredLogs = allLogs.where((log) {
+        final logDate = DateTime.parse(log.timestamp);
+        
+        bool afterFrom = selectedFromDate == null || 
+            logDate.isAfter(selectedFromDate!.subtract(const Duration(days: 1)));
+        bool beforeTo = selectedToDate == null || 
+            logDate.isBefore(selectedToDate!.add(const Duration(days: 1)));
+        
+        return afterFrom && beforeTo;
+      }).toList();
+
+      return filteredLogs;
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to load logs: ${e.toString()}'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      throw Exception('Failed to load logs');
     }
   }
 
-  void _addNewBox() async {
-    final nextBoxNumber = await _getNextBoxNumber();
-    final boxIdController = TextEditingController(text: nextBoxNumber.toString());
-    final locationController = TextEditingController();
-    final statusController = TextEditingController(text: 'VACANT');
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        height: MediaQuery.of(context).size.height * 0.7,
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          children: [
-            Container(
-              width: 60,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey[300],
-                borderRadius: BorderRadius.circular(2),
-              ),
+  showDialog(
+    context: context,
+    builder: (context) {
+      return StatefulBuilder(
+        builder: (context, setState) {
+          return Dialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
             ),
-            const SizedBox(height: 20),
-            const Text('Add New Mailbox', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 20),
-            Expanded(
-              child: SingleChildScrollView(
-                child: Column(
-                  children: [
-                    TextField(
-                      controller: boxIdController,
-                      readOnly: true, // Make box ID read-only
-                      decoration: InputDecoration(
-                        labelText: 'Box Number',
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                        prefixIcon: const Icon(Icons.numbers),
-                      ),
+            insetPadding: const EdgeInsets.all(16),
+            child: Container(
+              decoration: BoxDecoration(
+                color: marioWhite,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: marioRed, width: 3),
+              ),
+              padding: const EdgeInsets.all(16),
+              constraints: const BoxConstraints(maxHeight: 600),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'HISTORY - BOX #${box.boxId}',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: marioRed,
+                      fontFamily: 'MarioBros2',
                     ),
-                    const SizedBox(height: 16),
-                    TextField(
-                      controller: locationController,
-                      decoration: InputDecoration(
-                        labelText: 'Location',
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                        prefixIcon: const Icon(Icons.location_on),
-                      ),
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  // Date filter row - Mario themed
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: marioBlue.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
                     ),
-                    const SizedBox(height: 16),
-                    TextField(
-                      controller: statusController,
-                      readOnly: true, // Make status read-only (default to VACANT)
-                      decoration: InputDecoration(
-                        labelText: 'Status',
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                        prefixIcon: const Icon(Icons.info_outline),
-                      ),
-                    ),
-                    const SizedBox(height: 30),
-                    ElevatedButton(
-                      onPressed: () async {
-                        final boxId = boxIdController.text.trim();
-                        final location = locationController.text.trim();
-                        final status = statusController.text.trim();
-
-                        if (location.isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Location is required')),
-                          );
-                          return;
-                        }
-
-                        try {
-                          final response = await http.post(
-                            Uri.parse('${MyConfig.servername}/flutter_php/add_box.php'),
-                            body: {
-                              'user_id': widget.userdata.userId,
-                              'box_id': boxId,
-                              'box_location': location,
-                              'status': status,
-                              'lock_status': 'UNLOCKED'
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: InkWell(
+                            onTap: () async {
+                              final date = await showDatePicker(
+                                context: context,
+                                initialDate: selectedFromDate ?? DateTime.now(),
+                                firstDate: DateTime(2000),
+                                lastDate: DateTime.now(),
+                                builder: (context, child) {
+                                  return Theme(
+                                    data: ThemeData.light().copyWith(
+                                      colorScheme: const ColorScheme.light(
+                                        primary: marioRed,
+                                        onPrimary: marioWhite,
+                                      ),
+                                    ),
+                                    child: child!,
+                                  );
+                                },
+                              );
+                              if (date != null) {
+                                setState(() => selectedFromDate = date);
+                              }
                             },
-                          );
-
-                          if (response.statusCode == 200) {
-                            Navigator.pop(context);
-                            _refreshBoxes();
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('New mailbox added successfully'),
-                                backgroundColor: Colors.green,
+                            child: Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: marioWhite,
+                                border: Border.all(color: marioBlue),
+                                borderRadius: BorderRadius.circular(8),
                               ),
-                            );
-                          } else {
-                            throw Exception('Failed to add mailbox');
-                          }
-                        } catch (e) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text('Error: ${e.toString()}'),
-                              backgroundColor: Colors.red,
+                              child: Row(
+                                children: [
+                                  Icon(Icons.calendar_today, size: 10, color: marioBlue),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    selectedFromDate != null 
+                                        ? 'From: ${DateFormat('dd/MM/yyyy').format(selectedFromDate!)}'
+                                        : 'From Date',
+                                    style: const TextStyle(color: marioBlack, fontSize: 5),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: InkWell(
+                            onTap: () async {
+                              final date = await showDatePicker(
+                                context: context,
+                                initialDate: selectedToDate ?? DateTime.now(),
+                                firstDate: DateTime(2000),
+                                lastDate: DateTime.now(),
+                                builder: (context, child) {
+                                  return Theme(
+                                    data: ThemeData.light().copyWith(
+                                      colorScheme: ColorScheme.light(
+                                        primary: marioRed,
+                                        onPrimary: marioWhite,
+                                      ),
+                                    ),
+                                    child: child!,
+                                  );
+                                },
+                              );
+                              if (date != null) {
+                                setState(() => selectedToDate = date);
+                              }
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: marioWhite,
+                                border: Border.all(color: marioBlue),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(Icons.calendar_today, size: 10, color: marioBlue),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    selectedToDate != null 
+                                        ? 'To: ${DateFormat('dd/MM/yyyy').format(selectedToDate!)}'
+                                        : 'To Date',
+                                    style: TextStyle(color: marioBlack, fontSize: 5),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  // Filter button - Mario styled
+                  ElevatedButton(
+                    onPressed: () => setState(() {}),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: marioRed,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    ),
+                    child: Text(
+                      'APPLY FILTER',
+                      style: TextStyle(
+                        color: marioWhite,
+                        fontWeight: FontWeight.bold,
+                        fontFamily: 'MarioBros2',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  // Logs list with Mario theme
+                  Expanded(
+                    child: FutureBuilder<List<Log>>(
+                      future: _fetchAndFilterLogs(),
+                      builder: (context, snapshot) {
+                        if (snapshot.connectionState == ConnectionState.waiting) {
+                          return Center(
+                            child: CircularProgressIndicator(color: marioRed),
+                          );
+                        } else if (snapshot.hasError) {
+                          return Center(
+                            child: Text(
+                              'Error: ${snapshot.error}',
+                              style: TextStyle(color: marioRed),
+                            ),
+                          );
+                        } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                          return Center(
+                            child: Text(
+                              'No logs found',
+                              style: TextStyle(color: marioBlue),
                             ),
                           );
                         }
+                        
+                        return ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: snapshot.data!.length,
+                          itemBuilder: (context, index) {
+                            final log = snapshot.data![index];
+                            return Container(
+                              margin: const EdgeInsets.only(bottom: 8),
+                              decoration: BoxDecoration(
+                                color: index % 2 == 0 ? marioBlue.withOpacity(0.1) : marioRed.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: ListTile(
+                                leading: Icon(
+                                  Icons.history,
+                                  color: marioRed,
+                                ),
+                                title: Text(
+                                  log.action,
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: marioBlack,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  _formatTimestamp(log.timestamp),
+                                  style: TextStyle(color: marioBlue),
+                                ),
+                                trailing: Container(
+                                  padding: const EdgeInsets.all(6),
+                                  decoration: BoxDecoration(
+                                    color: marioYellow,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: Text(
+                                    '${index + 1}',
+                                    style: TextStyle(
+                                      color: marioBlack,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        );
                       },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.blue,
-                        minimumSize: const Size(double.infinity, 50),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      ),
-                      child: const Text('CREATE MAILBOX', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
                     ),
-                  ],
+                  ),
+                  const SizedBox(height: 16),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: Text(
+                      'CLOSE',
+                      style: TextStyle(
+                        color: marioRed,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    },
+  );
+}
+
+void _addNewBox() async {
+  final nextBoxNumber = await _getNextBoxNumber();
+  final boxIdController = TextEditingController(text: nextBoxNumber.toString());
+  final locationController = TextEditingController();
+  final statusController = TextEditingController(text: 'VACANT');
+
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (context) => Container(
+      height: MediaQuery.of(context).size.height * 0.7,
+      decoration: BoxDecoration(
+        color: marioWhite,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        border: Border.all(color: marioRed, width: 3),
+      ),
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        children: [
+          Container(
+            width: 60,
+            height: 4,
+            decoration: BoxDecoration(
+              color: marioRed,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Text(
+            'ADD NEW MAILBOX',
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: marioRed,
+              fontFamily: 'MarioBros2',
+            ),
+          ),
+          const SizedBox(height: 20),
+          Expanded(
+            child: SingleChildScrollView(
+              child: Column(
+                children: [
+                  TextField(
+                    controller: boxIdController,
+                    readOnly: true,
+                    decoration: InputDecoration(
+                      labelText: 'Box Number',
+                      labelStyle: TextStyle(color: marioBlue),
+                      prefixIcon: Icon(Icons.numbers, color: marioRed),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: marioBlue),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: marioRed, width: 2),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: locationController,
+                    decoration: InputDecoration(
+                      labelText: 'Location',
+                      labelStyle: TextStyle(color: marioBlue),
+                      prefixIcon: Icon(Icons.location_on, color: marioRed),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: marioBlue),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: marioRed, width: 2),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: statusController,
+                    readOnly: true,
+                    decoration: InputDecoration(
+                      labelText: 'Status',
+                      labelStyle: TextStyle(color: marioBlue),
+                      prefixIcon: Icon(Icons.info_outline, color: marioRed),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: marioBlue),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 30),
+                  ElevatedButton(
+                    onPressed: () async {
+                      final boxId = boxIdController.text.trim();
+                      final location = locationController.text.trim();
+                      final status = statusController.text.trim();
+
+                      if (location.isEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Location is required'),
+                            backgroundColor: marioRed,
+                          ),
+                        );
+                        return;
+                      }
+
+                      try {
+                        final response = await http.post(
+                          Uri.parse('${MyConfig.servername}/flutter_php/add_box.php'),
+                          body: {
+                            'user_id': widget.userdata.userId,
+                            'box_id': boxId,
+                            'box_location': location,
+                            'box_status': status,
+                            'lock_status': 'UNLOCKED'
+                          },
+                        );
+
+                        if (response.statusCode == 200) {
+                          Navigator.pop(context);
+                          _refreshBoxes();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('New mailbox added!'),
+                              backgroundColor: marioGreen,
+                            ),
+                          );
+                        }
+                      } catch (e) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Error: ${e.toString()}'),
+                            backgroundColor: marioRed,
+                          ),
+                        );
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: marioRed,
+                      minimumSize: const Size(double.infinity, 50),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: Text(
+                      'CREATE MAILBOX',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: marioWhite,
+                        fontFamily: 'MarioBros2',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+void _editBox(Box box) {
+  final locationController = TextEditingController(text: box.location);
+  showDialog(
+    context: context,
+    builder: (context) => Dialog(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
+      backgroundColor: Colors.transparent,
+      child: Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: marioWhite,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: marioRed, width: 3),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'EDIT BOX #${box.boxId}',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: marioRed,
+                fontFamily: 'MarioBros2',
+              ),
+            ),
+            const SizedBox(height: 20),
+            TextField(
+              controller: locationController,
+              decoration: InputDecoration(
+                labelText: 'Box Location',
+                labelStyle: TextStyle(color: marioBlue),
+                prefixIcon: Icon(Icons.location_on, color: marioRed),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: marioBlue),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: marioRed, width: 2),
                 ),
               ),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text(
+                    'CANCEL',
+                    style: TextStyle(
+                      color: marioBlue,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                ElevatedButton(
+                  onPressed: () async {
+                    final newLocation = locationController.text.trim();
+                    if (newLocation.isNotEmpty) {
+                      try {
+                        final response = await http.post(
+                          Uri.parse('${MyConfig.servername}/flutter_php/update_box_location.php'),
+                          body: {'box_id': box.boxId, 'box_location': newLocation},
+                        );
+                        
+                        if (response.statusCode == 200) {
+                          Navigator.pop(context);
+                          _refreshBoxes();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Box location updated!'),
+                              backgroundColor: marioGreen,
+                            ),
+                          );
+                        }
+                      } catch (e) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Error: ${e.toString()}'),
+                            backgroundColor: marioRed,
+                          ),
+                        );
+                      }
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: marioRed,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: const Text(
+                    'SAVE',
+                    style: TextStyle(
+                      color: marioWhite,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
       ),
-    );
-  }
-
-  void _editBox(Box box) {
-    final locationController = TextEditingController(text: box.location);
-    showDialog(
-      context: context,
-      builder: (context) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        elevation: 0,
-        backgroundColor: Colors.transparent,
-        child: Container(
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('Edit Box #${box.boxId}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 20),
-              TextField(
-                controller: locationController,
-                decoration: InputDecoration(
-                  labelText: 'Box Location',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  prefixIcon: const Icon(Icons.location_on),
-                ),
-              ),
-              const SizedBox(height: 20),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('CANCEL'),
-                  ),
-                  const SizedBox(width: 10),
-                  ElevatedButton(
-                    onPressed: () async {
-                      final newLocation = locationController.text.trim();
-                      if (newLocation.isNotEmpty) {
-                        try {
-                          final response = await http.post(
-                            Uri.parse('${MyConfig.servername}/flutter_php/update_box_location.php'),
-                            body: {'box_id': box.boxId, 'box_location': newLocation},
-                          );
-                          
-                          if (response.statusCode == 200) {
-                            final responseData = json.decode(response.body);
-                            if (responseData['success']) {
-                              Navigator.pop(context);
-                              _refreshBoxes();
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text('Box #${box.boxId} location updated'),
-                                  backgroundColor: Colors.green,
-                                ),
-                              );
-                            } else {
-                              throw Exception(responseData['error'] ?? 'Failed to update location');
-                            }
-                          } else {
-                            throw Exception('HTTP error ${response.statusCode}');
-                          }
-                        } catch (e) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text('Error: ${e.toString()}'),
-                              backgroundColor: Colors.red,
-                            ),
-                          );
-                        }
-                      }
-                    },
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
-                    child: const Text('SAVE'),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+    ),
+  );
+}
 
   Future<void> _toggleLock(Box box, bool newLockStatus) async {
     try {
       final response = await http.post(
         Uri.parse('${MyConfig.servername}/flutter_php/update_box_lock.php'),
-        body: {
-          'box_id': box.boxId.toString(),
-          'box_lock': newLockStatus ? 'LOCKED' : 'UNLOCKED',
-        },
+        body: {'box_id': box.boxId, 'box_lock': newLockStatus ? 'LOCKED' : 'UNLOCKED'},
       );
-
-      if (response.statusCode == 200) {
-        final responseData = json.decode(response.body);
-        if (responseData['success']) {
-          _refreshBoxes();
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Box ${newLockStatus ? 'locked' : 'unlocked'}'),
-              backgroundColor: Colors.green,
-            ),
-          );
-        } else {
-          throw Exception(responseData['error'] ?? 'Failed to update lock status');
-        }
+      
+      final jsonResponse = json.decode(response.body);
+      if (jsonResponse['success']) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Lock ${newLockStatus ? 'engaged' : 'released'}')),
+        );
       } else {
-        throw Exception('HTTP error ${response.statusCode}');
+        throw Exception(jsonResponse['error']);
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: ${e.toString()}'), backgroundColor: Colors.red),
-      );
+        SnackBar(content: Text('Failed: $e')));
     }
   }
 
